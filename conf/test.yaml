@@ -1,0 +1,25 @@
+#json对象
+#{"name":"张三","age":23}
+#{"name":"张三","age":23,"friends":['李四','王五']}
+#json数组
+#[{"name":"马六","age":26},{"name":"全七","age":27}]
+
+#yaml格式的文件后缀名为：yaml  yml
+#name: 张三
+#age: 23
+
+#name: 张三
+#age: 23
+#friends:
+#  - 李四
+#  - 王五
+
+#- name: 马六
+#  age: 26
+#- name: 全七
+#  age: 27
+
+name: 张三
+age: 23
+sex: 男
+
