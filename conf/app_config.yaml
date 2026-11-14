@@ -13,7 +13,7 @@ logging:
 # 数据库meta的配置
 db_meta:
   host: localhost
-  port: 3306
+  port: 3307
   user: atguigu
   password: Atguigu.123
   database: meta
@@ -21,7 +21,7 @@ db_meta:
 # 数据库dw的配置
 db_dw:
   host: localhost
-  port: 3306
+  port: 3307
   user: atguigu
   password: Atguigu.123
   database: dw

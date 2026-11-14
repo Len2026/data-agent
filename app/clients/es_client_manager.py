@@ -8,6 +8,10 @@ AsyncElasticsearch()
 .bulk() # 添加多个文档
 
  print(results['hits']['hits'][0]['_source'])
+
+Elasticsearch 是基于 Apache Lucene 封装的分布式搜索引擎，
+Lucene 才是真正负责倒排索引、分词、检索的底层引擎；
+ES 给它包上了 RESTful API、分布式、集群、分片、副本能力。
 """
 import asyncio
 from elasticsearch import AsyncElasticsearch

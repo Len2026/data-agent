@@ -1,16 +1,16 @@
-"""
-业务层
-"""
 import uuid
 
 from langchain_huggingface import HuggingFaceEndpointEmbeddings
 
 from app.conf.meta_config import MetaConfig, TableConfig, MetricConfig
 from app.core.log import logger
+from app.models.es.value_info_es import ValueInfoEs
 from app.models.mysql.column_info_mysql import ColumnInfoMySQL
+from app.models.mysql.column_metric_mysql import ColumnMetricMySQL
 from app.models.mysql.metric_info_mysql import MetricInfoMySQL
 from app.models.mysql.table_info_mysql import TableInfoMySQL
 from app.models.qdrant.column_info_qdrant import ColumnInfoQdrant
+from app.models.qdrant.metric_info_qdrant import MetricInfoQdrant
 from app.repositories.es.value_es_repository import ValueEsRepository
 from app.repositories.mysql.dw_mysql_repository import DwMySQLRepository
 from app.repositories.mysql.meta_mysql_repository import MetaMySQLRepository
@@ -27,7 +27,7 @@ class MetaKnowledgeService:
             column_qdrant_repo: ColumnQdrantRepository,
             metric_qdrant_repo: MetricQdrantRepository,
             embedding_client: HuggingFaceEndpointEmbeddings
-    ):
+    ):  # 读库
         self.value_es_repo = value_es_repo
         self.dw_mysql_repo = dw_mysql_repo
         self.meta_mysql_repo = meta_mysql_repo
@@ -78,6 +78,7 @@ class MetaKnowledgeService:
 
 
         logger.info('构建业务 结束')
+
 
 
     async def _save_table_infos_to_meta(self, tables: list[TableConfig])->list[ColumnInfoMySQL]:
@@ -204,15 +205,143 @@ class MetaKnowledgeService:
 
 
     async def _save_column_values_to_es(self, column_infos: list[ColumnInfoMySQL], tables: list[TableConfig]):
-        pass
+        # 遍历tables，根据字段的sync配置，判断是否需要建立全文索引
+        # 查询dw库取出需要建立全文索引的字段的所有值
+        # 创建ValueInfoEs对象
+        # 数据存库
+
+        # ValueInfoEs对象列表
+        value_infos: list[ValueInfoEs] = []
+
+        # 收集所有sync配置 {column_id:bool}
+        column_sync_dict: dict[str, bool] = {}
+        for table in tables:
+            for column in table.columns:
+                column_sync_dict[f'{table.name}.{column.name}'] = column.sync
+
+        for column_info in column_infos:
+            # 判断是否需要建立全文索引
+            if column_sync_dict.get(column_info.id):
+                # 查询dw库取出需要建立全文索引的字段的所有值
+                values = await self.dw_mysql_repo.get_column_values(column_info.table_id, column_info.name, 1000000)
+
+                for value in values:
+                    # 创建ValueInfoEs对象
+                    value_infos.append(ValueInfoEs(
+                        id=f'{column_info.id}.{value}',
+                        value=value,
+                        type=column_info.type,
+                        column_id=column_info.id,
+                        column_name=column_info.name,
+                        table_id=column_info.table_id,
+                        table_name=column_info.table_id
+                    ))
+
+        # 数据存库
+        await self.value_es_repo.save_values(value_infos)
 
 
 
     async def _save_metric_infos_to_meta(self, metrics: list[MetricConfig])->list[MetricInfoMySQL]:
-        pass
+        metric_infos: list[MetricInfoMySQL] = []
+
+        for metric in metrics:
+            metric_infos.append(MetricInfoMySQL(
+                id=metric.name,
+                name=metric.name,
+                description=metric.description,
+                relevant_columns=metric.relevant_columns,
+                alias=metric.alias
+            ))
+
+        # 数据存库
+        self.meta_mysql_repo.save_metric_infos(metric_infos)
+
+        # 返回指标信息
+        return metric_infos
+
+
 
     async def _save_column_metrics_to_meta(self, metrics: list[MetricConfig]):
-        pass
+        column_metrics: list[ColumnMetricMySQL] = []
+        for metric in metrics:
+            for column_id in metric.relevant_columns:
+                column_metrics.append(ColumnMetricMySQL(
+                    metric_id=metric.name,
+                    column_id=column_id
+                ))
+
+        # 数据存库
+        self.meta_mysql_repo.save_column_metrics(column_metrics)
+
+
 
     async def _save_metric_infos_to_qdrant(self, metric_infos: list[MetricInfoMySQL]):
-        pass
+        # 遍历metric_infos列表，对每一个metric_info中的name字段、description字段，以及alias中的每一个值进行向量化
+        # 每一个point包含 id  vector  payload 部分
+        # id 使用uuid生成
+        # vector 使用embedding模型向量化
+        # payload 当前指标信息的字典
+
+        # 收集每一个point的信息的字典列表
+        # [ { id:uuid,text:向量文本,payload:{字段信息的字典} }, {...} ]
+        points: list[dict] = []
+        for metric_info in metric_infos:
+            payload = MetricInfoQdrant(
+                id=metric_info.id,
+                name=metric_info.name,
+                alias=metric_info.alias,
+                description=metric_info.description,
+                relevant_columns=metric_info.relevant_columns
+            )
+
+            # name字段
+            points.append({
+                "id": uuid.uuid4(),
+                "text": metric_info.name,
+                "payload": payload
+            })
+
+            # description字段
+            points.append({
+                "id": uuid.uuid4(),
+                "text": metric_info.description,
+                "payload": payload
+            })
+
+            # alias字段
+            for alia in metric_info.alias:
+                points.append({
+                    "id": uuid.uuid4(),
+                    "text": alia,
+                    "payload": payload
+                })
+
+        # 获取所有需要向量化的文本
+        texts = [point['text'] for point in points]
+        # 一次性向量化所有文本，效率低，甚至程序崩溃
+        # client.embed_documents(texts)
+
+        # 收集所有的向量
+        vectors: list[list[float | int]] = []
+
+        # 每批向量化的数量
+        batch_size = 10
+
+        for i in range(0, len(texts), batch_size):
+            # i - 0  i - 10  i - 20 ...
+            # 截取一批需要向量化的文本
+            batch_texts = texts[i:i + batch_size]
+            # 向量化一批文本
+            batch_vectors = await self.embedding_client.aembed_documents(batch_texts)
+            # vectors.append(batch_vectors) # [[[],[],[]]] 多包了一层[]
+            vectors.extend(batch_vectors)
+
+        # 获取所有的id
+        ids = [point['id'] for point in points]
+
+        # 获取所有的payload
+        payloads = [point['payload'] for point in points]
+
+        # 存库
+        await self.metric_qdrant_repo.upsert_metric_vectors(ids, vectors, payloads)
